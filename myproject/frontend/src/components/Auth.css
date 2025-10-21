@@ -100,3 +100,196 @@
 .link:hover {
     text-decoration: underline;
 }
+
+/* QR Code Login Styles */
+.qr-login-card {
+    max-width: 500px;
+}
+
+.qr-section {
+    text-align: center;
+    padding: 1.5rem 0;
+}
+
+.qr-code-container {
+    background: white;
+    padding: 1rem;
+    border-radius: 10px;
+    border: 2px solid #4ced61;
+    display: inline-block;
+    margin-bottom: 1rem;
+}
+
+.qr-code-image {
+    width: 256px;
+    height: 256px;
+    display: block;
+}
+
+.qr-loading {
+    padding: 3rem;
+}
+
+.spinner-small {
+    border: 3px solid #f3f3f3;
+    border-top: 3px solid #4ced61;
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    animation: spin 1s linear infinite;
+    margin: 0 auto 1rem;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.qr-instructions {
+    color: #333;
+    font-size: 1.1rem;
+    margin: 1rem 0 0.5rem;
+    font-weight: 600;
+}
+
+.qr-sub-instructions {
+    color: #666;
+    font-size: 0.9rem;
+    margin-bottom: 1rem;
+}
+
+.btn-secondary {
+    width: 100%;
+    padding: 0.75rem;
+    background: #4ced61;
+    color: white;
+    border: 2px solid #4ced61;
+    border-radius: 5px;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 1rem;
+}
+
+.btn-secondary:hover {
+    background: #f0fdf4;
+}
+
+.btn-secondary:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.divider {
+    text-align: center;
+    margin: 1.5rem 0;
+    position: relative;
+}
+
+.divider::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 50%;
+    width: 100%;
+    height: 1px;
+    background: #ddd;
+}
+
+.divider span {
+    background: white;
+    padding: 0 1rem;
+    position: relative;
+    color: #999;
+}
+
+.mobile-sim-notice {
+    background: #f0f9ff;
+    border: 1px solid #bae6fd;
+    border-radius: 5px;
+    padding: 1rem;
+    margin-top: 1rem;
+}
+
+.mobile-sim-notice code {
+    background: #e0f2fe;
+    padding: 0.2rem 0.5rem;
+    border-radius: 3px;
+    font-family: monospace;
+    font-size: 0.85rem;
+}
+
+.small-text {
+    font-size: 0.85rem;
+    color: #666;
+    margin-top: 0.5rem;
+}
+
+/* Mobile Simulator Overlay */
+.mobile-simulator-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+}
+
+.mobile-simulator {
+    background: white;
+    padding: 2rem;
+    border-radius: 15px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+    width: 90%;
+    max-width: 400px;
+    max-height: 90vh;
+    overflow-y: auto;
+}
+
+.mobile-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+
+.mobile-header h2 {
+    margin: 0;
+    color: #333;
+    font-size: 1.5rem;
+}
+
+.close-btn {
+    background: none;
+    border: none;
+    font-size: 2rem;
+    cursor: pointer;
+    color: #999;
+    line-height: 1;
+    padding: 0;
+    width: 40px;
+    height: 40px;
+}
+
+.close-btn:hover {
+    color: #333;
+}
+
+.simulator-description {
+    color: #666;
+    margin-bottom: 1.5rem;
+    font-size: 0.95rem;
+}
+
+.message.success {
+    background: #d4edda;
+    color: #155724;
+    padding: 0.75rem;
+    border-radius: 5px;
+    margin-bottom: 1rem;
+    border-left: 4px solid #28a745;
+}

@@ -71,6 +71,23 @@ func InitDB() error {
 		return err
 	}
 
+	// Create login_sessions table for QR code authentication
+	createSessionsTable := `
+	CREATE TABLE IF NOT EXISTS login_sessions (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		token TEXT UNIQUE NOT NULL,
+		user_id INTEGER,
+		status TEXT DEFAULT 'pending',
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		expires_at DATETIME NOT NULL,
+		FOREIGN KEY (user_id) REFERENCES users(id)
+	);`
+
+	_, err = DB.Exec(createSessionsTable)
+	if err != nil {
+		return err
+	}
+
 	log.Println("Database initialized successfully")
 	return nil
 }

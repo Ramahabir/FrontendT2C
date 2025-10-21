@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"myproject/database"
 	"time"
 
+	"github.com/google/uuid"
+	qrcode "github.com/skip2/go-qrcode"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -65,6 +68,187 @@ type Response struct {
 	Success bool        `json:"success"`
 	Message string      `json:"message"`
 	Data    interface{} `json:"data,omitempty"`
+}
+
+// GenerateQRLoginCode generates a new QR code for login
+func (a *App) GenerateQRLoginCode() Response {
+	// Generate unique session token
+	token := uuid.New().String()
+
+	// Set expiration time (5 minutes from now)
+	expiresAt := time.Now().Add(5 * time.Minute)
+
+	// Insert session into database
+	_, err := database.DB.Exec(
+		"INSERT INTO login_sessions (token, status, expires_at) VALUES (?, ?, ?)",
+		token, "pending", expiresAt,
+	)
+	if err != nil {
+		return Response{Success: false, Message: "Failed to generate QR code"}
+	}
+
+	// Generate QR code image
+	qrBytes, err := qrcode.Encode(token, qrcode.Medium, 256)
+	if err != nil {
+		return Response{Success: false, Message: "Failed to generate QR code image"}
+	}
+
+	// Convert to base64 for frontend display
+	qrBase64 := base64.StdEncoding.EncodeToString(qrBytes)
+
+	return Response{
+		Success: true,
+		Message: "QR code generated",
+		Data: map[string]interface{}{
+			"token":     token,
+			"qrCode":    "data:image/png;base64," + qrBase64,
+			"expiresAt": expiresAt.Format(time.RFC3339),
+		},
+	}
+}
+
+// CheckQRLoginStatus checks if the QR code has been scanned and authenticated
+func (a *App) CheckQRLoginStatus(token string) Response {
+	var status string
+	var userID sql.NullInt64
+	var expiresAt time.Time
+
+	err := database.DB.QueryRow(
+		"SELECT status, user_id, expires_at FROM login_sessions WHERE token = ?",
+		token,
+	).Scan(&status, &userID, &expiresAt)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Response{Success: false, Message: "Invalid session token"}
+		}
+		return Response{Success: false, Message: "Failed to check status"}
+	}
+
+	// Check if token has expired
+	if time.Now().After(expiresAt) {
+		database.DB.Exec("UPDATE login_sessions SET status = ? WHERE token = ?", "expired", token)
+		return Response{
+			Success: false,
+			Message: "QR code has expired",
+			Data: map[string]interface{}{
+				"status": "expired",
+			},
+		}
+	}
+
+	// If authenticated, get user data and log them in
+	if status == "authenticated" && userID.Valid {
+		var user database.User
+		err := database.DB.QueryRow(
+			"SELECT id, name, email, balance FROM users WHERE id = ?",
+			userID.Int64,
+		).Scan(&user.ID, &user.Name, &user.Email, &user.Balance)
+
+		if err != nil {
+			return Response{Success: false, Message: "Failed to retrieve user data"}
+		}
+
+		// Set current user
+		a.currentUserID = user.ID
+
+		// Clean up session
+		database.DB.Exec("DELETE FROM login_sessions WHERE token = ?", token)
+
+		return Response{
+			Success: true,
+			Message: "Login successful",
+			Data: map[string]interface{}{
+				"status":  "authenticated",
+				"id":      user.ID,
+				"name":    user.Name,
+				"email":   user.Email,
+				"balance": user.Balance,
+			},
+		}
+	}
+
+	return Response{
+		Success: true,
+		Message: "Waiting for authentication",
+		Data: map[string]interface{}{
+			"status": status,
+		},
+	}
+}
+
+// AuthenticateQRLogin simulates mobile app authenticating the QR code
+// In production, this would be called by the mobile app backend
+func (a *App) AuthenticateQRLogin(token string, email string, password string) Response {
+	// Verify the session exists and is pending
+	var sessionID int
+	var status string
+	var expiresAt time.Time
+
+	err := database.DB.QueryRow(
+		"SELECT id, status, expires_at FROM login_sessions WHERE token = ?",
+		token,
+	).Scan(&sessionID, &status, &expiresAt)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Response{Success: false, Message: "Invalid QR code"}
+		}
+		return Response{Success: false, Message: "Failed to verify QR code"}
+	}
+
+	// Check if expired
+	if time.Now().After(expiresAt) {
+		return Response{Success: false, Message: "QR code has expired"}
+	}
+
+	// Check if already used
+	if status != "pending" {
+		return Response{Success: false, Message: "QR code has already been used"}
+	}
+
+	// Authenticate user credentials
+	var user database.User
+	var hashedPassword string
+
+	err = database.DB.QueryRow(
+		"SELECT id, name, email, password, balance FROM users WHERE email = ?",
+		email,
+	).Scan(&user.ID, &user.Name, &user.Email, &hashedPassword, &user.Balance)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Response{Success: false, Message: "Invalid email or password"}
+		}
+		return Response{Success: false, Message: "Authentication failed"}
+	}
+
+	// Compare password
+	err = bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password))
+	if err != nil {
+		return Response{Success: false, Message: "Invalid email or password"}
+	}
+
+	// Update session with user ID and mark as authenticated
+	_, err = database.DB.Exec(
+		"UPDATE login_sessions SET user_id = ?, status = ? WHERE id = ?",
+		user.ID, "authenticated", sessionID,
+	)
+	if err != nil {
+		return Response{Success: false, Message: "Failed to complete authentication"}
+	}
+
+	return Response{
+		Success: true,
+		Message: "QR code authenticated successfully",
+		Data: map[string]interface{}{
+			"user": map[string]interface{}{
+				"id":    user.ID,
+				"name":  user.Name,
+				"email": user.Email,
+			},
+		},
+	}
 }
 
 // Register creates a new user account
