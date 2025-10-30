@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"embed"
+	"log"
+	"myproject/api"
 	"myproject/database"
+	"net/http"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -14,14 +17,24 @@ import (
 var assets embed.FS
 
 func main() {
-	// Create an instance of the app structure
+	// Initialize database
+	err := database.InitDB()
+	if err != nil {
+		log.Fatal("Failed to initialize database:", err)
+	}
+	defer database.CloseDB()
+
+	// Start API server in separate goroutine
+	go startAPIServer()
+
+	// Create Wails app instance
 	app := NewApp()
 
 	// Create application with options
-	err := wails.Run(&options.App{
-		Title:  "Trash 2 Cash",
-		Width:  1024,
-		Height: 768,
+	err = wails.Run(&options.App{
+		Title:  "Trash 2 Cash - Station Control",
+		Width:  1280,
+		Height: 800,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
@@ -39,3 +52,13 @@ func main() {
 		println("Error:", err.Error())
 	}
 }
+
+func startAPIServer() {
+	router := api.SetupRouter()
+	
+	log.Println("Starting API server on http://localhost:8080")
+	if err := http.ListenAndServe(":8080", router); err != nil {
+		log.Fatal("API server failed:", err)
+	}
+}
+

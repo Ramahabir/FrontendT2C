@@ -78,19 +78,19 @@ func (a *App) GenerateQRLoginCode() Response {
 	// Set expiration time (5 minutes from now)
 	expiresAt := time.Now().Add(5 * time.Minute)
 
-	// Insert session into database
-	_, err := database.DB.Exec(
+	// Generate QR code image first before inserting into database
+	qrBytes, err := qrcode.Encode(token, qrcode.Medium, 256)
+	if err != nil {
+		return Response{Success: false, Message: "Failed to generate QR code image"}
+	}
+
+	// Insert session into database only after QR code is successfully generated
+	_, err = database.DB.Exec(
 		"INSERT INTO login_sessions (token, status, expires_at) VALUES (?, ?, ?)",
 		token, "pending", expiresAt,
 	)
 	if err != nil {
-		return Response{Success: false, Message: "Failed to generate QR code"}
-	}
-
-	// Generate QR code image
-	qrBytes, err := qrcode.Encode(token, qrcode.Medium, 256)
-	if err != nil {
-		return Response{Success: false, Message: "Failed to generate QR code image"}
+		return Response{Success: false, Message: "Failed to create login session"}
 	}
 
 	// Convert to base64 for frontend display
@@ -141,9 +141,9 @@ func (a *App) CheckQRLoginStatus(token string) Response {
 	if status == "authenticated" && userID.Valid {
 		var user database.User
 		err := database.DB.QueryRow(
-			"SELECT id, name, email, balance FROM users WHERE id = ?",
+			"SELECT id, full_name, email, total_points FROM users WHERE id = ?",
 			userID.Int64,
-		).Scan(&user.ID, &user.Name, &user.Email, &user.Balance)
+		).Scan(&user.ID, &user.FullName, &user.Email, &user.TotalPoints)
 
 		if err != nil {
 			return Response{Success: false, Message: "Failed to retrieve user data"}
@@ -161,9 +161,9 @@ func (a *App) CheckQRLoginStatus(token string) Response {
 			Data: map[string]interface{}{
 				"status":  "authenticated",
 				"id":      user.ID,
-				"name":    user.Name,
+				"name":    user.FullName,
 				"email":   user.Email,
-				"balance": user.Balance,
+				"balance": user.TotalPoints,
 			},
 		}
 	}
@@ -212,9 +212,9 @@ func (a *App) AuthenticateQRLogin(token string, email string, password string) R
 	var hashedPassword string
 
 	err = database.DB.QueryRow(
-		"SELECT id, name, email, password, balance FROM users WHERE email = ?",
+		"SELECT id, full_name, email, password, total_points FROM users WHERE email = ?",
 		email,
-	).Scan(&user.ID, &user.Name, &user.Email, &hashedPassword, &user.Balance)
+	).Scan(&user.ID, &user.FullName, &user.Email, &hashedPassword, &user.TotalPoints)
 
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -244,7 +244,7 @@ func (a *App) AuthenticateQRLogin(token string, email string, password string) R
 		Data: map[string]interface{}{
 			"user": map[string]interface{}{
 				"id":    user.ID,
-				"name":  user.Name,
+				"name":  user.FullName,
 				"email": user.Email,
 			},
 		},
@@ -266,7 +266,7 @@ func (a *App) Register(req RegisterRequest) Response {
 
 	// Insert user into database
 	result, err := database.DB.Exec(
-		"INSERT INTO users (name, email, password, balance) VALUES (?, ?, ?, ?)",
+		"INSERT INTO users (full_name, email, password, total_points) VALUES (?, ?, ?, ?)",
 		req.Name, req.Email, string(hashedPassword), 0,
 	)
 	if err != nil {
@@ -292,9 +292,9 @@ func (a *App) Login(req LoginRequest) Response {
 	var hashedPassword string
 
 	err := database.DB.QueryRow(
-		"SELECT id, name, email, password, balance FROM users WHERE email = ?",
+		"SELECT id, full_name, email, password, total_points FROM users WHERE email = ?",
 		req.Email,
-	).Scan(&user.ID, &user.Name, &user.Email, &hashedPassword, &user.Balance)
+	).Scan(&user.ID, &user.FullName, &user.Email, &hashedPassword, &user.TotalPoints)
 
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -317,9 +317,9 @@ func (a *App) Login(req LoginRequest) Response {
 		Message: "Login successful",
 		Data: map[string]interface{}{
 			"id":      user.ID,
-			"name":    user.Name,
+			"name":    user.FullName,
 			"email":   user.Email,
-			"balance": user.Balance,
+			"balance": user.TotalPoints,
 		},
 	}
 }
@@ -332,9 +332,9 @@ func (a *App) GetCurrentUser() Response {
 
 	var user database.User
 	err := database.DB.QueryRow(
-		"SELECT id, name, email, balance FROM users WHERE id = ?",
+		"SELECT id, full_name, email, total_points FROM users WHERE id = ?",
 		a.currentUserID,
-	).Scan(&user.ID, &user.Name, &user.Email, &user.Balance)
+	).Scan(&user.ID, &user.FullName, &user.Email, &user.TotalPoints)
 
 	if err != nil {
 		return Response{Success: false, Message: "User not found"}
@@ -344,9 +344,9 @@ func (a *App) GetCurrentUser() Response {
 		Success: true,
 		Data: map[string]interface{}{
 			"id":      user.ID,
-			"name":    user.Name,
+			"name":    user.FullName,
 			"email":   user.Email,
-			"balance": user.Balance,
+			"balance": user.TotalPoints,
 		},
 	}
 }
