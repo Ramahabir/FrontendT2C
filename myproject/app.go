@@ -1,23 +1,27 @@
 package main
 
 import (
+	"bytes"
 	"context"
-	"database/sql"
-	"encoding/base64"
+	"encoding/json"
 	"fmt"
-	"log"
-	"myproject/database"
+	"io"
+	"net/http"
 	"time"
+)
 
-	"github.com/google/uuid"
-	qrcode "github.com/skip2/go-qrcode"
-	"golang.org/x/crypto/bcrypt"
+const (
+	BaseURL = "https://devel-ai.ub.ac.id/api/trash2cash"
 )
 
 // App struct
 type App struct {
 	ctx           context.Context
+	authToken     string
 	currentUserID int
+	qrToken       string
+	qrCode        string
+	qrExpiresAt   time.Time
 }
 
 // NewApp creates a new App application struct
@@ -29,12 +33,6 @@ func NewApp() *App {
 // so we can call the runtime methods
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	
-	// Initialize database
-	err := database.InitDB()
-	if err != nil {
-		log.Fatal("Failed to initialize database:", err)
-	}
 }
 
 // RegisterRequest represents registration data
@@ -70,411 +68,316 @@ type Response struct {
 	Data    interface{} `json:"data,omitempty"`
 }
 
+// APIResponse represents the API response structure
+type APIResponse struct {
+	Success bool            `json:"success"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data,omitempty"`
+}
+
+// Helper function to make API requests
+func (a *App) makeRequest(method, endpoint string, body interface{}, useAuth bool) (*APIResponse, error) {
+	var reqBody io.Reader
+	if body != nil {
+		jsonData, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		reqBody = bytes.NewBuffer(jsonData)
+	}
+
+	req, err := http.NewRequest(method, BaseURL+endpoint, reqBody)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	if useAuth && a.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+a.authToken)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var apiResp APIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		return nil, err
+	}
+
+	return &apiResp, nil
+}
+
 // GenerateQRLoginCode generates a new QR code for login
 func (a *App) GenerateQRLoginCode() Response {
-	// Generate unique session token
-	token := uuid.New().String()
-
-	// Set expiration time (5 minutes from now)
-	expiresAt := time.Now().Add(5 * time.Minute)
-
-	// Generate QR code image first before inserting into database
-	qrBytes, err := qrcode.Encode(token, qrcode.Medium, 256)
-	if err != nil {
-		return Response{Success: false, Message: "Failed to generate QR code image"}
+	// Check if we have a valid cached QR code
+	if a.qrToken != "" && time.Now().Before(a.qrExpiresAt) {
+		return Response{
+			Success: true,
+			Message: "QR code generated",
+			Data: map[string]interface{}{
+				"token":     a.qrToken,
+				"qrCode":    a.qrCode,
+				"expiresAt": a.qrExpiresAt.Format(time.RFC3339),
+			},
+		}
 	}
 
-	// Insert session into database only after QR code is successfully generated
-	_, err = database.DB.Exec(
-		"INSERT INTO login_sessions (token, status, expires_at) VALUES (?, ?, ?)",
-		token, "pending", expiresAt,
-	)
+	// Generate new QR code from API
+	apiResp, err := a.makeRequest("POST", "/auth/qr-login", nil, false)
 	if err != nil {
-		return Response{Success: false, Message: "Failed to create login session"}
+		return Response{Success: false, Message: "Failed to connect to server: " + err.Error()}
 	}
 
-	// Convert to base64 for frontend display
-	qrBase64 := base64.StdEncoding.EncodeToString(qrBytes)
+	if !apiResp.Success {
+		return Response{Success: false, Message: apiResp.Message}
+	}
+
+	// Parse the data
+	var data map[string]interface{}
+	if err := json.Unmarshal(apiResp.Data, &data); err != nil {
+		return Response{Success: false, Message: "Failed to parse response"}
+	}
+
+	// Cache the QR code data
+	if token, ok := data["token"].(string); ok {
+		a.qrToken = token
+	}
+	if qrCode, ok := data["qrCode"].(string); ok {
+		a.qrCode = qrCode
+	}
+	if expiresAtStr, ok := data["expiresAt"].(string); ok {
+		if expiresAt, err := time.Parse(time.RFC3339, expiresAtStr); err == nil {
+			a.qrExpiresAt = expiresAt
+		}
+	}
 
 	return Response{
 		Success: true,
-		Message: "QR code generated",
-		Data: map[string]interface{}{
-			"token":     token,
-			"qrCode":    "data:image/png;base64," + qrBase64,
-			"expiresAt": expiresAt.Format(time.RFC3339),
-		},
+		Message: apiResp.Message,
+		Data:    data,
 	}
 }
 
 // CheckQRLoginStatus checks if the QR code has been scanned and authenticated
 func (a *App) CheckQRLoginStatus(token string) Response {
-	var status string
-	var userID sql.NullInt64
-	var expiresAt time.Time
-
-	err := database.DB.QueryRow(
-		"SELECT status, user_id, expires_at FROM login_sessions WHERE token = ?",
-		token,
-	).Scan(&status, &userID, &expiresAt)
-
+	reqBody := map[string]string{"token": token}
+	apiResp, err := a.makeRequest("POST", "/auth/verify-token", reqBody, false)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return Response{Success: false, Message: "Invalid session token"}
-		}
-		return Response{Success: false, Message: "Failed to check status"}
+		return Response{Success: false, Message: "Failed to connect to server: " + err.Error()}
 	}
 
-	// Check if token has expired
-	if time.Now().After(expiresAt) {
-		database.DB.Exec("UPDATE login_sessions SET status = ? WHERE token = ?", "expired", token)
-		return Response{
-			Success: false,
-			Message: "QR code has expired",
-			Data: map[string]interface{}{
-				"status": "expired",
-			},
-		}
+	if !apiResp.Success {
+		return Response{Success: false, Message: apiResp.Message}
 	}
 
-	// If authenticated, get user data and log them in
-	if status == "authenticated" && userID.Valid {
-		var user database.User
-		err := database.DB.QueryRow(
-			"SELECT id, full_name, email, total_points FROM users WHERE id = ?",
-			userID.Int64,
-		).Scan(&user.ID, &user.FullName, &user.Email, &user.TotalPoints)
+	// Parse the data
+	var data map[string]interface{}
+	if err := json.Unmarshal(apiResp.Data, &data); err != nil {
+		return Response{Success: false, Message: "Failed to parse response"}
+	}
 
-		if err != nil {
-			return Response{Success: false, Message: "Failed to retrieve user data"}
+	// Check if authenticated
+	status, _ := data["status"].(string)
+	if status == "authenticated" {
+		// Store the auth token
+		if token, ok := data["token"].(string); ok {
+			a.authToken = token
+		}
+		if userID, ok := data["id"].(float64); ok {
+			a.currentUserID = int(userID)
 		}
 
-		// Set current user
-		a.currentUserID = user.ID
-
-		// Clean up session
-		database.DB.Exec("DELETE FROM login_sessions WHERE token = ?", token)
-
-		return Response{
-			Success: true,
-			Message: "Login successful",
-			Data: map[string]interface{}{
-				"status":  "authenticated",
-				"id":      user.ID,
-				"name":    user.FullName,
-				"email":   user.Email,
-				"balance": user.TotalPoints,
-			},
-		}
+		// Clear cached QR code after successful authentication
+		a.qrToken = ""
+		a.qrCode = ""
+		a.qrExpiresAt = time.Time{}
 	}
 
 	return Response{
 		Success: true,
-		Message: "Waiting for authentication",
-		Data: map[string]interface{}{
-			"status": status,
-		},
+		Message: apiResp.Message,
+		Data:    data,
 	}
 }
 
-// AuthenticateQRLogin simulates mobile app authenticating the QR code
-// In production, this would be called by the mobile app backend
+// AuthenticateQRLogin - This function is typically called by mobile app
+// For station app, use CheckQRLoginStatus to poll for authentication
 func (a *App) AuthenticateQRLogin(token string, email string, password string) Response {
-	// Verify the session exists and is pending
-	var sessionID int
-	var status string
-	var expiresAt time.Time
-
-	err := database.DB.QueryRow(
-		"SELECT id, status, expires_at FROM login_sessions WHERE token = ?",
-		token,
-	).Scan(&sessionID, &status, &expiresAt)
-
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return Response{Success: false, Message: "Invalid QR code"}
-		}
-		return Response{Success: false, Message: "Failed to verify QR code"}
-	}
-
-	// Check if expired
-	if time.Now().After(expiresAt) {
-		return Response{Success: false, Message: "QR code has expired"}
-	}
-
-	// Check if already used
-	if status != "pending" {
-		return Response{Success: false, Message: "QR code has already been used"}
-	}
-
-	// Authenticate user credentials
-	var user database.User
-	var hashedPassword string
-
-	err = database.DB.QueryRow(
-		"SELECT id, full_name, email, password, total_points FROM users WHERE email = ?",
-		email,
-	).Scan(&user.ID, &user.FullName, &user.Email, &hashedPassword, &user.TotalPoints)
-
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return Response{Success: false, Message: "Invalid email or password"}
-		}
-		return Response{Success: false, Message: "Authentication failed"}
-	}
-
-	// Compare password
-	err = bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password))
-	if err != nil {
-		return Response{Success: false, Message: "Invalid email or password"}
-	}
-
-	// Update session with user ID and mark as authenticated
-	_, err = database.DB.Exec(
-		"UPDATE login_sessions SET user_id = ?, status = ? WHERE id = ?",
-		user.ID, "authenticated", sessionID,
-	)
-	if err != nil {
-		return Response{Success: false, Message: "Failed to complete authentication"}
-	}
-
 	return Response{
-		Success: true,
-		Message: "QR code authenticated successfully",
-		Data: map[string]interface{}{
-			"user": map[string]interface{}{
-				"id":    user.ID,
-				"name":  user.FullName,
-				"email": user.Email,
-			},
-		},
+		Success: false,
+		Message: "This function should be called from mobile app, not station app",
 	}
 }
 
 // Register creates a new user account
 func (a *App) Register(req RegisterRequest) Response {
-	// Validate input
-	if req.Name == "" || req.Email == "" || req.Password == "" {
-		return Response{Success: false, Message: "All fields are required"}
+	reqBody := map[string]string{
+		"full_name": req.Name,
+		"email":     req.Email,
+		"password":  req.Password,
 	}
 
-	// Hash password
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	apiResp, err := a.makeRequest("POST", "/auth/register", reqBody, false)
 	if err != nil {
-		return Response{Success: false, Message: "Failed to process password"}
+		return Response{Success: false, Message: "Failed to connect to server: " + err.Error()}
 	}
 
-	// Insert user into database
-	result, err := database.DB.Exec(
-		"INSERT INTO users (full_name, email, password, total_points) VALUES (?, ?, ?, ?)",
-		req.Name, req.Email, string(hashedPassword), 0,
-	)
-	if err != nil {
-		return Response{Success: false, Message: "Email already exists"}
+	if !apiResp.Success {
+		return Response{Success: false, Message: apiResp.Message}
 	}
 
-	userID, _ := result.LastInsertId()
-	
+	var data map[string]interface{}
+	if err := json.Unmarshal(apiResp.Data, &data); err != nil {
+		return Response{Success: false, Message: "Failed to parse response"}
+	}
+
 	return Response{
 		Success: true,
-		Message: "Registration successful",
-		Data: map[string]interface{}{
-			"id":    userID,
-			"name":  req.Name,
-			"email": req.Email,
-		},
+		Message: apiResp.Message,
+		Data:    data,
 	}
 }
 
 // Login authenticates a user
 func (a *App) Login(req LoginRequest) Response {
-	var user database.User
-	var hashedPassword string
-
-	err := database.DB.QueryRow(
-		"SELECT id, full_name, email, password, total_points FROM users WHERE email = ?",
-		req.Email,
-	).Scan(&user.ID, &user.FullName, &user.Email, &hashedPassword, &user.TotalPoints)
-
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return Response{Success: false, Message: "Invalid email or password"}
-		}
-		return Response{Success: false, Message: "Login failed"}
+	reqBody := map[string]string{
+		"email":    req.Email,
+		"password": req.Password,
 	}
 
-	// Compare password
-	err = bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(req.Password))
+	apiResp, err := a.makeRequest("POST", "/auth/login", reqBody, false)
 	if err != nil {
-		return Response{Success: false, Message: "Invalid email or password"}
+		return Response{Success: false, Message: "Failed to connect to server: " + err.Error()}
 	}
 
-	// Set current user
-	a.currentUserID = user.ID
+	if !apiResp.Success {
+		return Response{Success: false, Message: apiResp.Message}
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(apiResp.Data, &data); err != nil {
+		return Response{Success: false, Message: "Failed to parse response"}
+	}
+
+	// Store auth token
+	if token, ok := data["token"].(string); ok {
+		a.authToken = token
+	}
+	if userID, ok := data["id"].(float64); ok {
+		a.currentUserID = int(userID)
+	}
 
 	return Response{
 		Success: true,
-		Message: "Login successful",
-		Data: map[string]interface{}{
-			"id":      user.ID,
-			"name":    user.FullName,
-			"email":   user.Email,
-			"balance": user.TotalPoints,
-		},
+		Message: apiResp.Message,
+		Data:    data,
 	}
 }
 
 // GetCurrentUser returns the current logged in user's data
 func (a *App) GetCurrentUser() Response {
-	if a.currentUserID == 0 {
+	if a.authToken == "" {
 		return Response{Success: false, Message: "Not logged in"}
 	}
 
-	var user database.User
-	err := database.DB.QueryRow(
-		"SELECT id, full_name, email, total_points FROM users WHERE id = ?",
-		a.currentUserID,
-	).Scan(&user.ID, &user.FullName, &user.Email, &user.TotalPoints)
-
+	apiResp, err := a.makeRequest("GET", "/user/profile", nil, true)
 	if err != nil {
-		return Response{Success: false, Message: "User not found"}
+		return Response{Success: false, Message: "Failed to connect to server: " + err.Error()}
+	}
+
+	if !apiResp.Success {
+		return Response{Success: false, Message: apiResp.Message}
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(apiResp.Data, &data); err != nil {
+		return Response{Success: false, Message: "Failed to parse response"}
 	}
 
 	return Response{
 		Success: true,
-		Data: map[string]interface{}{
-			"id":      user.ID,
-			"name":    user.FullName,
-			"email":   user.Email,
-			"balance": user.TotalPoints,
-		},
+		Data:    data,
 	}
 }
 
-// SubmitTrash processes a trash submission and calculates reward
+// SubmitTrash processes a trash submission (now uses station/deposit endpoint)
 func (a *App) SubmitTrash(req SubmissionRequest) Response {
-	if a.currentUserID == 0 {
+	if a.authToken == "" {
 		return Response{Success: false, Message: "Not logged in"}
 	}
 
-	// Validate input
-	if req.Material == "" || req.Weight <= 0 {
-		return Response{Success: false, Message: "Invalid material or weight"}
+	reqBody := map[string]interface{}{
+		"material": req.Material,
+		"weight":   req.Weight,
 	}
 
-	// Calculate reward based on material type
-	var reward float64
-	switch req.Material {
-	case "plastic":
-		reward = req.Weight * 5000 // Rp 5,000 per kg
-	case "metal":
-		reward = req.Weight * 10000 // Rp 10,000 per kg
-	case "paper":
-		reward = req.Weight * 2000 // Rp 2,000 per kg
-	default:
-		return Response{Success: false, Message: "Invalid material type"}
-	}
-
-	// Begin transaction
-	tx, err := database.DB.Begin()
+	apiResp, err := a.makeRequest("POST", "/station/deposit", reqBody, true)
 	if err != nil {
-		return Response{Success: false, Message: "Failed to process submission"}
-	}
-	defer tx.Rollback()
-
-	// Insert submission
-	_, err = tx.Exec(
-		"INSERT INTO submissions (user_id, material, weight, reward) VALUES (?, ?, ?, ?)",
-		a.currentUserID, req.Material, req.Weight, reward,
-	)
-	if err != nil {
-		return Response{Success: false, Message: "Failed to save submission"}
+		return Response{Success: false, Message: "Failed to connect to server: " + err.Error()}
 	}
 
-	// Update user balance
-	_, err = tx.Exec(
-		"UPDATE users SET balance = balance + ? WHERE id = ?",
-		reward, a.currentUserID,
-	)
-	if err != nil {
-		return Response{Success: false, Message: "Failed to update balance"}
+	if !apiResp.Success {
+		return Response{Success: false, Message: apiResp.Message}
 	}
 
-	// Commit transaction
-	err = tx.Commit()
-	if err != nil {
-		return Response{Success: false, Message: "Failed to complete submission"}
+	var data map[string]interface{}
+	if err := json.Unmarshal(apiResp.Data, &data); err != nil {
+		return Response{Success: false, Message: "Failed to parse response"}
 	}
-
-	// Get updated balance
-	var newBalance float64
-	database.DB.QueryRow("SELECT balance FROM users WHERE id = ?", a.currentUserID).Scan(&newBalance)
 
 	return Response{
 		Success: true,
-		Message: fmt.Sprintf("Submission successful! You earned Rp %.0f", reward),
-		Data: map[string]interface{}{
-			"reward":     reward,
-			"newBalance": newBalance,
-		},
+		Message: apiResp.Message,
+		Data:    data,
 	}
 }
 
 // GetSubmissions returns the submission history for the current user
 func (a *App) GetSubmissions() Response {
-	if a.currentUserID == 0 {
+	if a.authToken == "" {
 		return Response{Success: false, Message: "Not logged in"}
 	}
 
-	rows, err := database.DB.Query(
-		"SELECT id, material, weight, reward, created_at FROM submissions WHERE user_id = ? ORDER BY created_at DESC",
-		a.currentUserID,
-	)
+	apiResp, err := a.makeRequest("GET", "/transactions", nil, true)
 	if err != nil {
-		return Response{Success: false, Message: "Failed to retrieve submissions"}
-	}
-	defer rows.Close()
-
-	var submissions []map[string]interface{}
-	for rows.Next() {
-		var id int
-		var material string
-		var weight, reward float64
-		var createdAt time.Time
-
-		err := rows.Scan(&id, &material, &weight, &reward, &createdAt)
-		if err != nil {
-			continue
-		}
-
-		submissions = append(submissions, map[string]interface{}{
-			"id":        id,
-			"material":  material,
-			"weight":    weight,
-			"reward":    reward,
-			"createdAt": createdAt.Format("2006-01-02 15:04:05"),
-		})
+		return Response{Success: false, Message: "Failed to connect to server: " + err.Error()}
 	}
 
-	if submissions == nil {
-		submissions = []map[string]interface{}{}
+	if !apiResp.Success {
+		return Response{Success: false, Message: apiResp.Message}
+	}
+
+	var data interface{}
+	if err := json.Unmarshal(apiResp.Data, &data); err != nil {
+		return Response{Success: false, Message: "Failed to parse response"}
 	}
 
 	return Response{
 		Success: true,
-		Data:    submissions,
+		Data:    data,
 	}
 }
 
 // Logout logs out the current user
 func (a *App) Logout() Response {
+	if a.authToken != "" {
+		// Call logout endpoint
+		a.makeRequest("POST", "/auth/logout", nil, true)
+	}
+
 	a.currentUserID = 0
+	a.authToken = ""
+
 	return Response{Success: true, Message: "Logged out successfully"}
 }
 
 // StartSensorScan simulates sensor scanning for material and weight
 func (a *App) StartSensorScan() Response {
-	if a.currentUserID == 0 {
+	if a.authToken == "" {
 		return Response{Success: false, Message: "Not logged in"}
 	}
 
@@ -489,28 +392,33 @@ func (a *App) StartSensorScan() Response {
 
 // GetSensorReading simulates getting real-time sensor data
 func (a *App) GetSensorReading() Response {
-	if a.currentUserID == 0 {
+	if a.authToken == "" {
 		return Response{Success: false, Message: "Not logged in"}
 	}
 
 	// Simulate sensor reading with randomized data
-	materials := []string{"plastic", "metal", "paper"}
-	materialIndex := time.Now().Unix() % 3
+	materials := []string{"plastic", "glass", "metal", "paper"}
+	materialIndex := time.Now().Unix() % 4
 	material := materials[materialIndex]
-	
+
 	// Simulate weight detection (random weight between 0.1 and 5.0 kg)
 	weight := 0.1 + float64(time.Now().UnixNano()%50)/10.0
-	
-	// Calculate potential reward
-	var reward float64
+
+	// Calculate potential reward based on API material rates
+	var points float64
 	switch material {
 	case "plastic":
-		reward = weight * 5000
+		points = weight * 10
+	case "glass":
+		points = weight * 8
 	case "metal":
-		reward = weight * 10000
+		points = weight * 15
 	case "paper":
-		reward = weight * 2000
+		points = weight * 5
 	}
+
+	// Convert points to rupiah (100 points = Rp 1,000)
+	reward := points * 10
 
 	return Response{
 		Success: true,
@@ -518,6 +426,7 @@ func (a *App) GetSensorReading() Response {
 		Data: map[string]interface{}{
 			"material": material,
 			"weight":   weight,
+			"points":   points,
 			"reward":   reward,
 			"status":   "detected",
 		},
@@ -526,7 +435,7 @@ func (a *App) GetSensorReading() Response {
 
 // ConfirmSensorSubmission processes the sensor-detected trash submission
 func (a *App) ConfirmSensorSubmission(material string, weight float64) Response {
-	if a.currentUserID == 0 {
+	if a.authToken == "" {
 		return Response{Success: false, Message: "Not logged in"}
 	}
 
@@ -535,63 +444,29 @@ func (a *App) ConfirmSensorSubmission(material string, weight float64) Response 
 		return Response{Success: false, Message: "Invalid sensor data"}
 	}
 
-	// Calculate reward based on material type
-	var reward float64
-	switch material {
-	case "plastic":
-		reward = weight * 5000 // Rp 5,000 per kg
-	case "metal":
-		reward = weight * 10000 // Rp 10,000 per kg
-	case "paper":
-		reward = weight * 2000 // Rp 2,000 per kg
-	default:
-		return Response{Success: false, Message: "Invalid material type"}
+	reqBody := map[string]interface{}{
+		"material": material,
+		"weight":   weight,
 	}
 
-	// Begin transaction
-	tx, err := database.DB.Begin()
+	apiResp, err := a.makeRequest("POST", "/station/deposit", reqBody, true)
 	if err != nil {
-		return Response{Success: false, Message: "Failed to process submission"}
-	}
-	defer tx.Rollback()
-
-	// Insert submission
-	_, err = tx.Exec(
-		"INSERT INTO submissions (user_id, material, weight, reward) VALUES (?, ?, ?, ?)",
-		a.currentUserID, material, weight, reward,
-	)
-	if err != nil {
-		return Response{Success: false, Message: "Failed to save submission"}
+		return Response{Success: false, Message: "Failed to connect to server: " + err.Error()}
 	}
 
-	// Update user balance
-	_, err = tx.Exec(
-		"UPDATE users SET balance = balance + ? WHERE id = ?",
-		reward, a.currentUserID,
-	)
-	if err != nil {
-		return Response{Success: false, Message: "Failed to update balance"}
+	if !apiResp.Success {
+		return Response{Success: false, Message: apiResp.Message}
 	}
 
-	// Commit transaction
-	err = tx.Commit()
-	if err != nil {
-		return Response{Success: false, Message: "Failed to complete submission"}
+	var data map[string]interface{}
+	if err := json.Unmarshal(apiResp.Data, &data); err != nil {
+		return Response{Success: false, Message: "Failed to parse response"}
 	}
-
-	// Get updated balance
-	var newBalance float64
-	database.DB.QueryRow("SELECT balance FROM users WHERE id = ?", a.currentUserID).Scan(&newBalance)
 
 	return Response{
 		Success: true,
-		Message: fmt.Sprintf("Submission successful! You earned Rp %.0f", reward),
-		Data: map[string]interface{}{
-			"material":   material,
-			"weight":     weight,
-			"reward":     reward,
-			"newBalance": newBalance,
-		},
+		Message: apiResp.Message,
+		Data:    data,
 	}
 }
 
