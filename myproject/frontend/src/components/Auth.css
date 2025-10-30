@@ -158,6 +158,80 @@
     margin-bottom: 1rem;
 }
 
+/* Session Status Indicators */
+.session-status {
+    margin-top: 1rem;
+}
+
+.status-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    font-weight: 500;
+    margin-top: 1rem;
+}
+
+.status-indicator.pending {
+    background: #fff3cd;
+    color: #856404;
+    border: 1px solid #ffc107;
+}
+
+.status-indicator.connected {
+    background: #d4edda;
+    color: #155724;
+    border: 1px solid #28a745;
+}
+
+.status-indicator.active {
+    background: #d1ecf1;
+    color: #0c5460;
+    border: 1px solid #17a2b8;
+}
+
+.status-indicator.expired {
+    background: #f8d7da;
+    color: #721c24;
+    border: 1px solid #dc3545;
+}
+
+.status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    animation: pulse 2s ease-in-out infinite;
+}
+
+.status-indicator.pending .status-dot {
+    background: #ffc107;
+}
+
+.status-indicator.connected .status-dot {
+    background: #28a745;
+}
+
+.status-indicator.active .status-dot {
+    background: #17a2b8;
+}
+
+.status-indicator.expired .status-dot {
+    background: #dc3545;
+}
+
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+    50% {
+        opacity: 0.5;
+        transform: scale(1.2);
+    }
+}
+
 .btn-secondary {
     width: 100%;
     padding: 0.75rem;

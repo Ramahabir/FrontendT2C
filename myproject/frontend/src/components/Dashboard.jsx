@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { GetSubmissions, Logout, GetCurrentUser, GetSensorReading, ConfirmSensorSubmission } from "../../wailsjs/go/main/App";
+import { GetSubmissions, EndSession, GetCurrentUser, GetSensorReading, ConfirmSensorSubmission } from "../../wailsjs/go/main/App";
 import './Dashboard.css';
 
 function Dashboard({ user, onLogout, onUpdateUser }) {
@@ -38,7 +38,7 @@ function Dashboard({ user, onLogout, onUpdateUser }) {
                     setSensorData(response.data);
                     setMessage('Item detected! Review and confirm to submit.');
                 } else {
-                    setMessage('Sensor detection failed. Please try again.');
+                    setMessage(response.message || 'Sensor detection failed. Please try again.');
                 }
             } catch (err) {
                 setMessage('Sensor error. Please try again.');
@@ -93,9 +93,25 @@ function Dashboard({ user, onLogout, onUpdateUser }) {
         setMessage('');
     };
 
-    const handleLogout = async () => {
-        await Logout();
-        onLogout();
+    const handleEndSession = async () => {
+        if (window.confirm('Are you sure you want to end this recycling session?')) {
+            setLoading(true);
+            try {
+                const response = await EndSession();
+                if (response.success) {
+                    setMessage('Session ended successfully. Returning to QR screen...');
+                    setTimeout(() => {
+                        onLogout();
+                    }, 1500);
+                } else {
+                    setMessage(response.message || 'Failed to end session');
+                }
+            } catch (err) {
+                setMessage('Error ending session');
+            } finally {
+                setLoading(false);
+            }
+        }
     };
 
     const formatCurrency = (amount) => {
@@ -111,6 +127,7 @@ function Dashboard({ user, onLogout, onUpdateUser }) {
             case 'plastic': return '♻️';
             case 'metal': return '⚙️';
             case 'paper': return '📄';
+            case 'glass': return '🔷';
             default: return '🗑️';
         }
     };
@@ -121,8 +138,13 @@ function Dashboard({ user, onLogout, onUpdateUser }) {
                 <div>
                     <h1>🗑️ Trash 2 Cash</h1>
                     <p>Welcome, {user.name}!</p>
+                    <span className="session-badge">🟢 Active Session</span>
                 </div>
-                <button onClick={handleLogout} className="btn-logout">Logout</button>
+                <div className="header-actions">
+                    <button onClick={handleEndSession} className="btn-end-session" disabled={loading}>
+                        End Session
+                    </button>
+                </div>
             </header>
 
             <div className="balance-card">
@@ -134,7 +156,7 @@ function Dashboard({ user, onLogout, onUpdateUser }) {
                 <h2>🔍 Sensor-Based Submission</h2>
                 
                 {message && (
-                    <div className={`message ${message.includes('successful') ? 'success' : 'error'}`}>
+                    <div className={`message ${message.includes('successful') || message.includes('detected') ? 'success' : 'error'}`}>
                         {message}
                     </div>
                 )}

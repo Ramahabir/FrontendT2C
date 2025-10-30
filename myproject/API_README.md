@@ -7,14 +7,37 @@ Trash 2 Cash is a comprehensive recycling management system with both a Wails de
 - **Backend**: Go REST API server (Port 8080)
 - **Frontend**: Wails Windows Desktop Application
 - **Database**: SQLite3
+- **Session Model**: Token-based temporary pairing between station and user
+
+## QR Code Session Flow
+
+The Trash2Cash system uses a secure session-based QR code mechanism:
+
+1. **Station Request**: Station requests a session token from backend (`/api/request-session`)
+2. **QR Display**: Backend generates a short-lived session token and returns it as a QR code
+3. **User Scan**: User scans QR code with mobile app
+4. **Session Linking**: Mobile app sends token + user auth to backend (`/api/connect-session`)
+5. **Verification**: Backend verifies and links user to station session
+6. **Active Session**: Station polls status (`/api/check-session`) and proceeds with recycling
+7. **Session Expiry**: Token expires after 5 minutes to prevent replay attacks
 
 ## API Endpoints
+
+### Station Session Management
+```
+POST   /api/request-session  - Request new session token and QR code
+POST   /api/check-session    - Check if user has connected to session
+POST   /api/connect-session  - Connect user to station session (mobile app)
+POST   /api/end-session      - End the current recycling session
+POST   /api/deposit          - Process item deposit (requires active session)
+GET    /api/status           - Get station status and today's stats
+GET    /api/config           - Get station configuration
+```
 
 ### Authentication
 ```
 POST   /api/auth/register       - Register new user
-POST   /api/auth/qr-login       - Generate QR code for login
-POST   /api/auth/verify-token   - Verify QR token with credentials
+POST   /api/auth/login          - Login with email/password (mobile app)
 POST   /api/auth/logout         - Logout and invalidate session
 ```
 
